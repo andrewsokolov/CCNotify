@@ -9,6 +9,7 @@ import json
 import sqlite3
 import subprocess
 import logging
+import requests
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime, timezone
 
@@ -101,42 +102,51 @@ class ClaudePromptTracker:
     def handle_stop(self, data):
         """Handle Stop event - update completion time and send notification"""
         session_id = data.get('session_id')
-        
+
         with sqlite3.connect(self.db_path) as conn:
             # Find the latest unfinished record for this session
             cursor = conn.execute("""
-                SELECT id, created_at, cwd
-                FROM prompt 
+                SELECT id, created_at, cwd, prompt
+                FROM prompt
                 WHERE session_id = ? AND stoped_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT 1
             """, (session_id,))
-            
+
             row = cursor.fetchone()
             if row:
-                record_id, created_at, cwd = row
-                
+                record_id, created_at, cwd, prompt_text = row
+
                 # Update completion time
                 conn.execute("""
-                    UPDATE prompt 
+                    UPDATE prompt
                     SET stoped_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                 """, (record_id,))
                 conn.commit()
-                
+
                 # Get seq number and calculate duration
                 cursor = conn.execute("SELECT seq FROM prompt WHERE id = ?", (record_id,))
                 seq_row = cursor.fetchone()
                 seq = seq_row[0] if seq_row else 1
-                
+
                 duration = self.calculate_duration_from_db(record_id)
+
+                # Extract task context from the prompt
+                task_context = self.extract_task_context(prompt_text)
+
+                # Create enhanced notification with task context
+                project_name = os.path.basename(cwd) if cwd else "Claude Task"
+                title = f"{project_name}: {task_context}"
+                subtitle = f"job#{seq} done, duration: {duration}"
+
                 self.send_notification(
-                    title=os.path.basename(cwd) if cwd else "Claude Task",
-                    subtitle=f"job#{seq} done, duration: {duration}",
+                    title=title,
+                    subtitle=subtitle,
                     cwd=cwd
                 )
-                
-                logging.info(f"Task completed for session {session_id}, job#{seq}, duration: {duration}")
+
+                logging.info(f"Task completed for session {session_id}, job#{seq}, duration: {duration}, context: {task_context}")
     
     def handle_notification(self, data):
         """Handle Notification event - check for waiting input and send notification"""
@@ -187,15 +197,15 @@ class ClaudePromptTracker:
                 start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
             else:
                 start_dt = datetime.fromisoformat(start_time)
-            
+
             if isinstance(end_time, str):
                 end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
             else:
                 end_dt = datetime.fromisoformat(end_time)
-            
+
             duration = end_dt - start_dt
             total_seconds = int(duration.total_seconds())
-            
+
             if total_seconds < 60:
                 return f"{total_seconds}s"
             elif total_seconds < 3600:
@@ -215,6 +225,89 @@ class ClaudePromptTracker:
         except Exception as e:
             logging.error(f"Error calculating duration: {e}")
             return "Unknown"
+
+    def extract_task_context(self, prompt_text):
+        """Extract meaningful task context from user prompt using local LLM"""
+        if not prompt_text or not prompt_text.strip():
+            return "Task completed"
+
+        # Truncate very long prompts to avoid API limits
+        truncated_prompt = prompt_text[:500] if len(prompt_text) > 500 else prompt_text
+
+        try:
+            payload = {
+                "model": "gpt-4.1-mini-latest",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that creates very short, descriptive task summaries. Extract the main action/task from the user's request in 2-4 words. Examples: 'Fix auth bug', 'Add login form', 'Update README', 'Debug API', 'Create tests'. Focus on the primary action verb and main subject."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Summarize this task in 2-4 words: {truncated_prompt}"
+                    }
+                ],
+                "max_tokens": 20,
+                "stream": False,
+                "temperature": 0.1
+            }
+
+            response = requests.post(
+                "http://localhost:8650/sdk/lanyard/v1/chat/completions",
+                json=payload,
+                timeout=5
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                logging.info(f"Response: {result}")
+                if 'choices' in result and len(result['choices']) > 0:
+                    content = result['choices'][0]['message'].get('content')
+                    if content and content.strip():
+                        summary = content.strip()
+                        # Clean up common AI response patterns
+                        summary = summary.replace('"', '').replace("'", "")
+                        if summary.lower().startswith('task:'):
+                            summary = summary[5:].strip()
+                        return summary[:30]  # Ensure it fits in notification
+
+        except Exception as e:
+            logging.warning(f"Failed to extract task context via LLM: {e}")
+
+        # Fallback: simple keyword extraction
+        return self.simple_task_extraction(truncated_prompt)
+
+    def simple_task_extraction(self, prompt_text):
+        """Fallback method for extracting task context without LLM"""
+        # Common action keywords
+        action_keywords = [
+            'fix', 'add', 'create', 'update', 'delete', 'remove', 'build', 'install',
+            'debug', 'test', 'analyze', 'review', 'refactor', 'optimize', 'deploy',
+            'implement', 'modify', 'configure', 'setup', 'migrate', 'merge'
+        ]
+
+        words = prompt_text.lower().split()[:10]  # First 10 words
+
+        # Find action word
+        action = None
+        for word in words:
+            clean_word = word.strip('.,!?;:')
+            if clean_word in action_keywords:
+                action = clean_word
+                break
+
+        # Find subject (next few words after action)
+        if action:
+            try:
+                action_index = next(i for i, word in enumerate(words) if word.strip('.,!?;:') == action)
+                subject_words = words[action_index + 1:action_index + 3]
+                subject = ' '.join(subject_words).strip('.,!?;:')
+                return f"{action.title()} {subject}"[:30]
+            except (StopIteration, IndexError):
+                return action.title()
+
+        # Last resort: first few words
+        return ':bad:' + ' '.join(words[:3]).title()[:30]
     
     def send_notification(self, title, subtitle, cwd=None):
         """Send macOS notification using terminal-notifier"""
