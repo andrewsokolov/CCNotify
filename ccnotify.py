@@ -137,8 +137,8 @@ class ClaudePromptTracker:
 
                 # Create enhanced notification with task context
                 project_name = os.path.basename(cwd) if cwd else "Claude Task"
-                title = f"{project_name}: {task_context}"
-                subtitle = f"job#{seq} done, duration: {duration}"
+                title = f"{project_name}"
+                subtitle = f"{task_context}. \n job#{seq} done, duration: {duration}."
 
                 self.send_notification(
                     title=title,
@@ -153,7 +153,7 @@ class ClaudePromptTracker:
         session_id = data.get('session_id')
         message = data.get('message', '')
         
-        if 'waiting for your input' in message.lower():
+        if 'permission' in message.lower():
             cwd = data.get('cwd', '')
             
             with sqlite3.connect(self.db_path) as conn:
@@ -169,7 +169,7 @@ class ClaudePromptTracker:
             
             self.send_notification(
                 title=os.path.basename(cwd) if cwd else 'Claude Task',
-                subtitle="Waiting for input",
+                subtitle="Permission needed",
                 cwd=cwd
             )
             
@@ -244,10 +244,10 @@ class ClaudePromptTracker:
                     },
                     {
                         "role": "user",
-                        "content": f"Summarize this task in 2-4 words: {truncated_prompt}"
+                        "content": f"Summarize this task in 4-6 words: {truncated_prompt}"
                     }
                 ],
-                "max_tokens": 20,
+                "max_tokens": 50,
                 "stream": False,
                 "temperature": 0.1
             }
@@ -269,7 +269,7 @@ class ClaudePromptTracker:
                         summary = summary.replace('"', '').replace("'", "")
                         if summary.lower().startswith('task:'):
                             summary = summary[5:].strip()
-                        return summary[:30]  # Ensure it fits in notification
+                        return summary[:50]  # Ensure it fits in notification
 
         except Exception as e:
             logging.warning(f"Failed to extract task context via LLM: {e}")
