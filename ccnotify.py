@@ -174,6 +174,8 @@ class ClaudePromptTracker:
             )
             
             logging.info(f"Waiting notification sent for session {session_id}")
+        else:
+            logging.info(f"Notification received for session {session_id}, message: {message}")
     
     def calculate_duration_from_db(self, record_id):
         """Calculate duration for a completed record"""
