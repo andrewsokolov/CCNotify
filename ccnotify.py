@@ -174,6 +174,14 @@ class ClaudePromptTracker:
             )
             
             logging.info(f"Waiting notification sent for session {session_id}")
+        elif 'approval' in message.lower():
+            self.send_notification(
+                title=os.path.basename(cwd) if cwd else 'Claude Task',
+                subtitle="Approval needed",
+                cwd=cwd
+            )
+            
+            logging.info(f"Approval notification sent for session {session_id}")
         else:
             logging.info(f"Notification received for session {session_id}, message: {message}")
     
