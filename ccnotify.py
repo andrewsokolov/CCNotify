@@ -255,7 +255,7 @@ class ClaudePromptTracker:
             response = requests.post(
                 "http://localhost:8650/sdk/lanyard/v1/chat/completions",
                 json=payload,
-                timeout=5
+                timeout=30
             )
 
             if response.status_code == 200:
@@ -270,6 +270,12 @@ class ClaudePromptTracker:
                         if summary.lower().startswith('task:'):
                             summary = summary[5:].strip()
                         return summary[:50]  # Ensure it fits in notification
+                    else:
+                        logging.warning(f"No content returned from LLM: {result['choices'][0]}")
+                else:
+                    logging.warning(f"No choices returned from LLM: {result}")
+            else:
+                logging.warning(f"Error response from LLM: {response.status_code}")
 
         except Exception as e:
             logging.warning(f"Failed to extract task context via LLM: {e}")
