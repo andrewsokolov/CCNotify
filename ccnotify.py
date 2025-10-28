@@ -152,10 +152,10 @@ class ClaudePromptTracker:
         """Handle Notification event - check for waiting input and send notification"""
         session_id = data.get('session_id')
         message = data.get('message', '')
-        
+        cwd = data.get('cwd', '')
+
         if 'permission' in message.lower():
-            cwd = data.get('cwd', '')
-            
+
             with sqlite3.connect(self.db_path) as conn:
                 # Update lastWaitUserAt for the latest record
                 conn.execute("""
